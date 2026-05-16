@@ -175,6 +175,9 @@ func installOnDevice(opts migrateOptions) error {
 		ConfigPath: installedConfigPath(opts),
 		Port:       opts.Port,
 	})
+	if err := os.MkdirAll(filepath.Dir(opts.InitPath), 0755); err != nil {
+		return err
+	}
 	if err := os.WriteFile(opts.InitPath, []byte(script), 0755); err != nil {
 		return err
 	}
