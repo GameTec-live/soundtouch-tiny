@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 const soundTouchPrivateCfgPath = "/opt/Bose/etc/SoundTouchSdkPrivateCfg.xml"
@@ -52,6 +54,8 @@ type migrateOptions struct {
 	USBSerial          bool
 	Start              bool
 	Reboot             bool
+	PairAccount        bool
+	AccountID          string
 }
 
 func migrateOnDevice(opts migrateOptions) error {
@@ -84,6 +88,9 @@ func migrateOnDevice(opts migrateOptions) error {
 	}
 	if opts.RemoteServicesPath == "" {
 		opts.RemoteServicesPath = defaultRemoteServicesPath
+	}
+	if opts.AccountID == "" {
+		opts.AccountID = defaultAccountID
 	}
 
 	data, err := os.ReadFile(opts.Path)
@@ -136,10 +143,124 @@ func migrateOnDevice(opts migrateOptions) error {
 		}
 	}
 
+	if opts.PairAccount && !opts.Reboot {
+		if err := pairLocalAccount(opts.Port, opts.AccountID); err != nil {
+			return err
+		}
+	}
+
 	if opts.Reboot {
 		return runCommand("reboot")
 	}
 	return nil
+}
+
+func pairLocalAccount(port int, accountID string) error {
+	info, err := fetchLocalDeviceInfo()
+	if err != nil {
+		return fmt.Errorf("read local /info before pairing: %w", err)
+	}
+	if strings.TrimSpace(info.MargeAccountUUID) != "" {
+		return nil
+	}
+	if err := primeTinyPowerOn(port, info); err != nil {
+		log.Printf("could not prime tiny with local device info before pairing: %v", err)
+	}
+
+	body := fmt.Sprintf(`<PairDeviceWithAccount><accountId>%s</accountId><userAuthToken>Bearer aftertouch</userAuthToken></PairDeviceWithAccount>`, accountID)
+	client := &http.Client{Timeout: 20 * time.Second}
+	resp, err := client.Post("http://127.0.0.1:8090/setMargeAccount", "application/vnd.bose.streaming-v1.2+xml", strings.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("POST /setMargeAccount: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 || bytes.Contains(respBody, []byte("<errors")) {
+		return fmt.Errorf("POST /setMargeAccount returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+	return nil
+}
+
+type localDeviceInfo struct {
+	DeviceID         string `xml:"deviceID,attr"`
+	Name             string `xml:"name"`
+	Type             string `xml:"type"`
+	MargeAccountUUID string `xml:"margeAccountUUID"`
+	Components       []struct {
+		Category        string `xml:"componentCategory"`
+		SoftwareVersion string `xml:"softwareVersion"`
+		SerialNumber    string `xml:"serialNumber"`
+	} `xml:"components>component"`
+	NetworkInfo []struct {
+		Type      string `xml:"type,attr"`
+		IPAddress string `xml:"ipAddress"`
+	} `xml:"networkInfo"`
+}
+
+func fetchLocalDeviceInfo() (*localDeviceInfo, error) {
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Get("http://127.0.0.1:8090/info")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("GET /info returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var info localDeviceInfo
+	if err := xml.NewDecoder(resp.Body).Decode(&info); err != nil {
+		return nil, err
+	}
+	return &info, nil
+}
+
+func primeTinyPowerOn(port int, info *localDeviceInfo) error {
+	if info == nil || info.DeviceID == "" {
+		return nil
+	}
+	firmware := ""
+	deviceSerial := info.DeviceID
+	productSerial := info.DeviceID
+	for _, c := range info.Components {
+		if c.Category == "SCM" {
+			firmware = c.SoftwareVersion
+			if c.SerialNumber != "" {
+				deviceSerial = c.SerialNumber
+			}
+		}
+		if c.Category == "PackagedProduct" && c.SerialNumber != "" {
+			productSerial = c.SerialNumber
+		}
+	}
+	ip := ""
+	for _, n := range info.NetworkInfo {
+		if n.IPAddress != "" {
+			ip = n.IPAddress
+			break
+		}
+	}
+	productCode := firstNonEmpty(info.Type, "SoundTouch")
+	body := fmt.Sprintf(`<device-data><device id="%s"><serialnumber>%s</serialnumber><firmware-version>%s</firmware-version><product product_code="%s"><serialnumber>%s</serialnumber></product></device><diagnostic-data><device-landscape><ip-address>%s</ip-address></device-landscape></diagnostic-data></device-data>`,
+		xmlBodyEscape(info.DeviceID), xmlBodyEscape(deviceSerial), xmlBodyEscape(firmware), xmlBodyEscape(productCode), xmlBodyEscape(productSerial), xmlBodyEscape(ip))
+	client := &http.Client{Timeout: 10 * time.Second}
+	url := fmt.Sprintf("http://127.0.0.1:%d/streaming/support/power_on", port)
+	resp, err := client.Post(url, "application/xml", strings.NewReader(body))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("POST tiny power_on returned HTTP %d", resp.StatusCode)
+	}
+	return nil
+}
+
+func xmlBodyEscape(s string) string {
+	var b strings.Builder
+	_ = xml.EscapeText(&b, []byte(s))
+	return b.String()
 }
 
 func installOnDevice(opts migrateOptions) error {

@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/xml"
 	"fmt"
+	"net/http"
 	"sort"
 	"strconv"
 	"strings"
@@ -58,6 +59,7 @@ type xmlSource struct {
 }
 
 type xmlPreset struct {
+	XMLName         xml.Name   `xml:"preset"`
 	ButtonNumber    string     `xml:"buttonNumber,attr,omitempty"`
 	ContainerArt    string     `xml:"containerArt"`
 	ContentItemType string     `xml:"contentItemType"`
@@ -99,6 +101,7 @@ type xmlAccountDevice struct {
 }
 
 type xmlMargeDevice struct {
+	XMLName         xml.Name           `xml:"device"`
 	DeviceID        string             `xml:"deviceid,attr"`
 	AttachedProduct xmlAttachedProduct `xml:"attachedProduct"`
 	CreatedOn       string             `xml:"createdOn"`
@@ -132,6 +135,11 @@ type xmlProviderSetting struct {
 	ProviderID string `xml:"providerId"`
 }
 
+type xmlProviderSettings struct {
+	XMLName  xml.Name             `xml:"providerSettings"`
+	Settings []xmlProviderSetting `xml:"providerSetting"`
+}
+
 type xmlToken struct {
 	XMLName     xml.Name `xml:"token"`
 	AccessToken string   `xml:"accessToken"`
@@ -156,7 +164,7 @@ func (s *Server) accountFullXML(account, baseURL string) ([]byte, error) {
 	resp := xmlAccount{
 		ID:                account,
 		AccountStatus:     "OK",
-		Mode:              "NORMAL",
+		Mode:              "global",
 		PreferredLanguage: "en",
 		ProviderSettings:  providerSettings(account),
 		Sources:           s.sources(),
@@ -193,6 +201,17 @@ func (s *Server) accountDevicesXML(account string) ([]byte, error) {
 		}},
 	}
 	return marshalXML(resp)
+}
+
+func (s *Server) accountDeviceXML() ([]byte, error) {
+	return marshalXML(xmlMargeDevice{
+		DeviceID:        s.deviceID(),
+		AttachedProduct: s.attachedProduct(),
+		CreatedOn:       dateStr,
+		IPAddress:       s.state.IPAddress,
+		Name:            s.state.DeviceName,
+		UpdatedOn:       dateStr,
+	})
 }
 
 func (s *Server) presetsXML(baseURL string) ([]byte, error) {
@@ -235,8 +254,12 @@ func (s *Server) sources() []xmlSource {
 }
 
 func (s *Server) presets(baseURL string) []xmlPreset {
-	presets := make([]xmlPreset, 0, len(s.cfg.Presets))
-	for _, p := range s.cfg.Presets {
+	configured := s.cfg.Presets
+	if len(configured) == 0 {
+		configured = localDevicePresetConfig()
+	}
+	presets := make([]xmlPreset, 0, len(configured))
+	for _, p := range configured {
 		src := sourceForPreset(p)
 		location := p.Location
 		if p.Source == sourceLocalInternetRadio && location == "" && p.StreamURL != "" {
@@ -260,6 +283,38 @@ func (s *Server) presets(baseURL string) []xmlPreset {
 	return presets
 }
 
+func localDevicePresetConfig() []PresetConfig {
+	client := &http.Client{Timeout: time.Second}
+	presets, err := fetchDevicePresets(client, defaultDeviceAPI)
+	if err != nil || presets == nil {
+		return nil
+	}
+	out := make([]PresetConfig, 0, len(presets.Presets))
+	for _, p := range presets.Presets {
+		if p.ID < 1 || p.ID > 6 || p.ContentItem == nil {
+			continue
+		}
+		item := p.ContentItem
+		cfg := PresetConfig{
+			Slot:          p.ID,
+			Name:          item.ItemName,
+			Source:        item.Source,
+			Type:          item.Type,
+			Location:      item.Location,
+			Art:           item.ContainerArt,
+			SourceAccount: item.SourceAccount,
+		}
+		if cfg.Type == "" {
+			cfg.Type = "stationurl"
+		}
+		if cfg.Name == "" {
+			cfg.Name = fmt.Sprintf("Preset %d", p.ID)
+		}
+		out = append(out, cfg)
+	}
+	return out
+}
+
 func sourceForPreset(p PresetConfig) xmlSource {
 	switch p.Source {
 	case sourceLocalInternetRadio:
@@ -274,6 +329,7 @@ func sourceForPreset(p PresetConfig) xmlSource {
 }
 
 func sourceXML(id, sourceType, providerID, secret, secretType string) xmlSource {
+	secretType = firstNonEmpty(secretType, "token")
 	src := xmlSource{
 		ID:               id,
 		Type:             "Audio",
@@ -284,14 +340,12 @@ func sourceXML(id, sourceType, providerID, secret, secretType string) xmlSource 
 		SourceSettings:   "",
 		UpdatedOn:        dateStr,
 		Username:         sourceType,
+		Credential:       &xmlCredential{Type: secretType, Value: secret},
 	}
 	if sourceType == sourceTuneIn {
 		src.Name = ""
 		src.SourceName = ""
 		src.Username = ""
-	}
-	if secret != "" || secretType != "" {
-		src.Credential = &xmlCredential{Type: firstNonEmpty(secretType, "token"), Value: secret}
 	}
 	return src
 }
@@ -310,6 +364,26 @@ func providerSettings(account string) []xmlProviderSetting {
 		{BoseID: account, KeyName: "ELIGIBLE_FOR_TRIAL", Value: "false", ProviderID: "14"},
 		{BoseID: account, KeyName: "STREAMING_QUALITY", Value: "2", ProviderID: "15"},
 	}
+}
+
+func providerSettingsXML(account string) ([]byte, error) {
+	return marshalXML(xmlProviderSettings{Settings: providerSettings(account)})
+}
+
+func groupXML() []byte {
+	return []byte(xmlHeader + "\n<group></group>")
+}
+
+func recentXML() []byte {
+	return []byte(xmlHeader + "\n<recent></recent>")
+}
+
+func recentsXML() []byte {
+	return []byte(xmlHeader + "\n<recents></recents>")
+}
+
+func ptrSource(src xmlSource) *xmlSource {
+	return &src
 }
 
 func (s *Server) attachedProduct() xmlAttachedProduct {

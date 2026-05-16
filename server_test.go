@@ -47,7 +47,9 @@ func TestAccountFullResponseIncludesDeviceSourcesAndPresets(t *testing.T) {
 	body := rec.Body.String()
 	for _, want := range []string{
 		`<account id="1234567">`,
+		`<mode>global</mode>`,
 		`<device deviceid="AABBCCDDEEFF">`,
+		`<credential type="token"></credential>`,
 		`<sourceproviderid>25</sourceproviderid>`,
 		`<preset buttonNumber="1">`,
 		`<location>/v1/playback/station/s12345</location>`,
@@ -83,6 +85,54 @@ func TestPowerOnGetIsOKForManualChecks(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAddAccountDeviceSupportsPairing(t *testing.T) {
+	s := NewServer(defaultConfig())
+	body := `<device deviceid="A81B6AC8B161"><name>Kitchen</name><macaddress>A81B6AC8B161</macaddress></device>`
+	req := httptest.NewRequest(http.MethodPost, "/streaming/account/1234567/device/", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	s.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `<device deviceid="A81B6AC8B161">`) {
+		t.Fatalf("response missing device id:\n%s", rec.Body.String())
+	}
+	if s.deviceID() != "A81B6AC8B161" {
+		t.Fatalf("deviceID = %q", s.deviceID())
+	}
+}
+
+func TestAccountSupportRoutesUsedAfterPairing(t *testing.T) {
+	s := NewServer(testConfig(t))
+
+	cases := []struct {
+		method string
+		path   string
+		body   string
+		status int
+		want   string
+	}{
+		{http.MethodGet, "/streaming/account/1234567/provider_settings", "", http.StatusOK, `<providerSettings>`},
+		{http.MethodGet, "/streaming/account/1234567/device/AABBCCDDEEFF/group/", "", http.StatusOK, `<group>`},
+		{http.MethodGet, "/streaming/account/1234567/device/AABBCCDDEEFF/recents", "", http.StatusOK, `<recents>`},
+		{http.MethodPost, "/streaming/account/1234567/device/AABBCCDDEEFF/recent", `<recent></recent>`, http.StatusCreated, `<recent>`},
+		{http.MethodPut, "/streaming/account/1234567/device/AABBCCDDEEFF/preset/1", `<preset buttonNumber="1"><sourceid>TUNEIN</sourceid><name>Radio</name><location>/v1/playback/station/s1</location><contentItemType>stationurl</contentItemType></preset>`, http.StatusOK, `<preset buttonNumber="1">`},
+	}
+	for _, tc := range cases {
+		req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
+		rec := httptest.NewRecorder()
+		s.ServeHTTP(rec, req)
+		if rec.Code != tc.status {
+			t.Fatalf("%s %s status = %d body=%s", tc.method, tc.path, rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), tc.want) {
+			t.Fatalf("%s %s response missing %q:\n%s", tc.method, tc.path, tc.want, rec.Body.String())
+		}
 	}
 }
 

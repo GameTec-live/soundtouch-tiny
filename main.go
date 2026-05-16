@@ -77,6 +77,8 @@ func migrate(args []string) error {
 	install := fs.Bool("install", true, "install binary, config, and autostart service")
 	installDir := fs.String("install-dir", defaultInstallDir, "persistent install directory")
 	usbSerial := fs.Bool("usb-serial", false, "replace USB ethernet gadget with Linux-friendly CDC ACM serial root shell")
+	pairAccount := fs.Bool("pair-account", true, "pair factory-reset speaker with a local Marge account")
+	accountID := fs.String("account-id", defaultAccountID, "7-digit local Marge account ID for -pair-account")
 	start := fs.Bool("start", true, "start service after migration")
 	reboot := fs.Bool("reboot", false, "reboot after migration")
 	if err := fs.Parse(args); err != nil {
@@ -95,6 +97,8 @@ func migrate(args []string) error {
 		USBSerial:        *usbSerial,
 		Start:            *start,
 		Reboot:           *reboot,
+		PairAccount:      *pairAccount,
+		AccountID:        *accountID,
 	})
 }
 

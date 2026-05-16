@@ -239,6 +239,18 @@ func (s *Server) handleAccountRoute(w http.ResponseWriter, r *http.Request, path
 	tail := strings.Join(parts[1:], "/")
 
 	switch {
+	case r.Method == http.MethodPost && isDeviceRegistrationTail(tail):
+		s.handleAddAccountDevice(w, r, account)
+	case tail == "provider_settings":
+		s.writeXML(w, func() ([]byte, error) { return providerSettingsXML(account) })
+	case r.Method == http.MethodGet && strings.HasPrefix(tail, "device/") && strings.HasSuffix(tail, "/group"):
+		writeXMLBytes(w, groupXML())
+	case (r.Method == http.MethodPost || r.Method == http.MethodPut) && strings.HasPrefix(tail, "device/") && strings.Contains(tail, "/preset/"):
+		s.handleUpdateAccountPreset(w, r)
+	case r.Method == http.MethodPost && strings.HasPrefix(tail, "device/") && (strings.HasSuffix(tail, "/recent") || strings.HasSuffix(tail, "/recents")):
+		writeXMLBytesStatus(w, http.StatusCreated, recentXML())
+	case r.Method == http.MethodGet && strings.HasPrefix(tail, "device/") && (strings.HasSuffix(tail, "/recent") || strings.HasSuffix(tail, "/recents")):
+		writeXMLBytes(w, recentsXML())
 	case tail == "full":
 		s.writeXML(w, func() ([]byte, error) { return s.accountFullXML(account, s.baseURL(r)) })
 	case tail == "sources":
@@ -255,6 +267,108 @@ func (s *Server) handleAccountRoute(w http.ResponseWriter, r *http.Request, path
 		return false
 	}
 	return true
+}
+
+func isDeviceRegistrationTail(tail string) bool {
+	if tail == "device" {
+		return true
+	}
+	if !strings.HasPrefix(tail, "device/") {
+		return false
+	}
+	return !strings.Contains(strings.TrimPrefix(tail, "device/"), "/")
+}
+
+func (s *Server) handleAddAccountDevice(w http.ResponseWriter, r *http.Request, account string) {
+	var req struct {
+		DeviceID   string `xml:"deviceid,attr"`
+		Name       string `xml:"name"`
+		MACAddress string `xml:"macaddress"`
+	}
+	if r.Body != nil {
+		body, err := io.ReadAll(io.LimitReader(r.Body, 64*1024))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if len(strings.TrimSpace(string(body))) > 0 {
+			if err := xml.Unmarshal(body, &req); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+		}
+	}
+
+	s.mu.Lock()
+	if req.DeviceID != "" {
+		s.state.DeviceID = req.DeviceID
+	}
+	if req.Name != "" {
+		s.state.DeviceName = req.Name
+	}
+	if req.MACAddress != "" && s.state.DeviceID == "" {
+		s.state.DeviceID = req.MACAddress
+	}
+	s.mu.Unlock()
+
+	data, err := s.accountDeviceXML()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/vnd.bose.streaming-v1.2+xml")
+	w.Header().Set("Location", "/streaming/account/"+account+"/device/"+s.deviceID())
+	w.WriteHeader(http.StatusCreated)
+	_, _ = w.Write(data)
+}
+
+func (s *Server) handleUpdateAccountPreset(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ButtonNumber    string `xml:"buttonNumber,attr"`
+		SourceID        string `xml:"sourceid"`
+		Name            string `xml:"name"`
+		Username        string `xml:"username"`
+		Location        string `xml:"location"`
+		ContentItemType string `xml:"contentItemType"`
+		ContainerArt    string `xml:"containerArt"`
+	}
+	if r.Body != nil {
+		body, err := io.ReadAll(io.LimitReader(r.Body, 64*1024))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if len(strings.TrimSpace(string(body))) > 0 {
+			if err := xml.Unmarshal(body, &req); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+		}
+	}
+	source := strings.ToUpper(strings.TrimSpace(req.SourceID))
+	if source == "" {
+		source = sourceTuneIn
+	}
+	preset := xmlPreset{
+		ButtonNumber:    req.ButtonNumber,
+		ContainerArt:    req.ContainerArt,
+		ContentItemType: firstNonEmpty(req.ContentItemType, "stationurl"),
+		CreatedOn:       dateStr,
+		Location:        req.Location,
+		Name:            req.Name,
+		Source:          ptrSource(sourceForPreset(PresetConfig{Source: source})),
+		UpdatedOn:       dateStr,
+		Username:        req.Username,
+	}
+	if preset.Username == "" {
+		preset.Username = preset.Name
+	}
+	data, err := marshalXML(preset)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeXMLBytes(w, data)
 }
 
 func (s *Server) handleTuneInPlayback(w http.ResponseWriter, r *http.Request, path string) {
@@ -354,8 +468,13 @@ func (s *Server) baseURL(r *http.Request) string {
 }
 
 func writeXMLBytes(w http.ResponseWriter, data []byte) {
+	writeXMLBytesStatus(w, http.StatusOK, data)
+}
+
+func writeXMLBytesStatus(w http.ResponseWriter, status int, data []byte) {
 	w.Header().Set("Content-Type", "application/vnd.bose.streaming-v1.2+xml")
 	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	w.WriteHeader(status)
 	_, _ = w.Write(data)
 }
 
