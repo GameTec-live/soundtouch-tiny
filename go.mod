@@ -1,3 +1,3 @@
-module github.com/gesellix/soundtouch-tiny
+module github.com/GameTec-live/soundtouch-tiny
 
 go 1.22

@@ -131,12 +131,13 @@ func TestInstallOnDeviceCreatesPathSymlink(t *testing.T) {
 		t.Fatal(err)
 	}
 	opts := migrateOptions{
-		InstallDir:       filepath.Join(dir, "nv", "soundtouch-tiny"),
-		OptLink:          filepath.Join(dir, "opt", "soundtouch-tiny"),
-		InitPath:         filepath.Join(dir, "etc", "init.d", "soundtouch-tiny"),
-		BinLink:          filepath.Join(dir, "usr", "bin", "soundtouch-tiny"),
-		LoginProfilePath: filepath.Join(dir, "mnt", "nv", ".profile"),
-		Port:             8000,
+		InstallDir:         filepath.Join(dir, "nv", "soundtouch-tiny"),
+		OptLink:            filepath.Join(dir, "opt", "soundtouch-tiny"),
+		InitPath:           filepath.Join(dir, "etc", "init.d", "soundtouch-tiny"),
+		BinLink:            filepath.Join(dir, "usr", "bin", "soundtouch-tiny"),
+		LoginProfilePath:   filepath.Join(dir, "mnt", "nv", ".profile"),
+		RemoteServicesPath: filepath.Join(dir, "mnt", "nv", "remote_services"),
+		Port:               8000,
 	}
 
 	oldArgs := os.Args
@@ -166,6 +167,12 @@ func TestInstallOnDeviceCreatesPathSymlink(t *testing.T) {
 		if !strings.Contains(string(profile), want) {
 			t.Fatalf("login profile missing %q in\n%s", want, profile)
 		}
+	}
+	if _, err := os.Stat(opts.RemoteServicesPath); err != nil {
+		t.Fatalf("remote_services marker: %v", err)
+	}
+	if _, err := os.Stat(persistentSSHOwnerPath(opts)); err != nil {
+		t.Fatalf("remote_services ownership marker: %v", err)
 	}
 }
 
@@ -245,6 +252,7 @@ func TestUninstallRestoresAndRemovesTinyFiles(t *testing.T) {
 	binLink := filepath.Join(dir, "usr", "bin", "soundtouch-tiny")
 	optLink := filepath.Join(dir, "opt", "soundtouch-tiny")
 	profilePath := filepath.Join(dir, "mnt", "nv", ".profile")
+	remoteServicesPath := filepath.Join(dir, "mnt", "nv", "remote_services")
 	installDir := filepath.Join(dir, "mnt", "nv", "soundtouch-tiny")
 	for _, path := range []string{cfgPath, shelbyPath, gettyPath, initPath, binLink, optLink} {
 		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
@@ -263,6 +271,8 @@ func TestUninstallRestoresAndRemovesTinyFiles(t *testing.T) {
 		binLink:               "bin",
 		optLink:               "opt",
 		profilePath:           "alias ll='ls -l'\n" + loginHintBlock(),
+		remoteServicesPath:    "",
+		filepath.Join(installDir, "remote_services.soundtouch-tiny"):        "",
 		filepath.Join(installDir, "soundtouch-tiny"):                        "installed",
 		filepath.Join(installDir, "usb-serial", "shelby_usb.original"):      "modprobe g_ether\n",
 		filepath.Join(installDir, "usb-serial", "launch_getty.sh.original"): "#!/bin/sh\nexec /sbin/getty -l /usr/bin/spawn_telnet_longsleep.sh -n 115200 ttyGS0\n",
@@ -285,14 +295,15 @@ func TestUninstallRestoresAndRemovesTinyFiles(t *testing.T) {
 	defer func() { commandRunner = oldRunCommand }()
 
 	err := uninstallFromDevice(migrateOptions{
-		Path:             cfgPath,
-		InstallDir:       installDir,
-		OptLink:          optLink,
-		InitPath:         initPath,
-		BinLink:          binLink,
-		ShelbyUSBPath:    shelbyPath,
-		LaunchGettyPath:  gettyPath,
-		LoginProfilePath: profilePath,
+		Path:               cfgPath,
+		InstallDir:         installDir,
+		OptLink:            optLink,
+		InitPath:           initPath,
+		BinLink:            binLink,
+		ShelbyUSBPath:      shelbyPath,
+		LaunchGettyPath:    gettyPath,
+		LoginProfilePath:   profilePath,
+		RemoteServicesPath: remoteServicesPath,
 	})
 	if err != nil {
 		t.Fatalf("uninstallFromDevice: %v", err)
@@ -316,6 +327,9 @@ func TestUninstallRestoresAndRemovesTinyFiles(t *testing.T) {
 			t.Fatalf("%s still exists or stat failed: %v", path, err)
 		}
 	}
+	if _, err := os.Stat(remoteServicesPath); !os.IsNotExist(err) {
+		t.Fatalf("remote_services should have been removed, stat err: %v", err)
+	}
 	profile, err := os.ReadFile(profilePath)
 	if err != nil {
 		t.Fatal(err)
@@ -328,6 +342,39 @@ func TestUninstallRestoresAndRemovesTinyFiles(t *testing.T) {
 	}
 	if !containsCommand(commands, "envswitch boseurls set https://streaming.bose.com https://worldwide.bose.com/updates/soundtouch") {
 		t.Fatalf("missing envswitch restore in %#v", commands)
+	}
+}
+
+func TestPersistentSSHPreexistingMarkerIsPreserved(t *testing.T) {
+	dir := t.TempDir()
+	opts := migrateOptions{
+		InstallDir:         filepath.Join(dir, "mnt", "nv", "soundtouch-tiny"),
+		RemoteServicesPath: filepath.Join(dir, "mnt", "nv", "remote_services"),
+	}
+	if err := os.MkdirAll(filepath.Dir(opts.RemoteServicesPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(opts.RemoteServicesPath, []byte("user-owned"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(opts.InstallDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := installPersistentSSH(opts); err != nil {
+		t.Fatalf("installPersistentSSH: %v", err)
+	}
+	if _, err := os.Stat(persistentSSHOwnerPath(opts)); !os.IsNotExist(err) {
+		t.Fatalf("ownership marker should not exist for pre-existing remote_services: %v", err)
+	}
+	if err := removePersistentSSHIfOwned(opts); err != nil {
+		t.Fatalf("removePersistentSSHIfOwned: %v", err)
+	}
+	data, err := os.ReadFile(opts.RemoteServicesPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "user-owned" {
+		t.Fatalf("remote_services = %q, want preserved user-owned marker", data)
 	}
 }
 

@@ -20,6 +20,7 @@ const defaultBinLink = "/usr/bin/soundtouch-tiny"
 const defaultShelbyUSBPath = "/etc/init.d/shelby_usb"
 const defaultLaunchGettyPath = "/usr/bin/launch_getty.sh"
 const defaultLoginProfilePath = "/mnt/nv/.profile"
+const defaultRemoteServicesPath = "/mnt/nv/remote_services"
 const installedBinaryName = "soundtouch-tiny"
 const loginHintBegin = "# soundtouch-tiny begin"
 const loginHintEnd = "# soundtouch-tiny end"
@@ -36,20 +37,21 @@ type privateCfg struct {
 }
 
 type migrateOptions struct {
-	Path             string
-	ConfigPath       string
-	Port             int
-	Install          bool
-	InstallDir       string
-	OptLink          string
-	InitPath         string
-	BinLink          string
-	ShelbyUSBPath    string
-	LaunchGettyPath  string
-	LoginProfilePath string
-	USBSerial        bool
-	Start            bool
-	Reboot           bool
+	Path               string
+	ConfigPath         string
+	Port               int
+	Install            bool
+	InstallDir         string
+	OptLink            string
+	InitPath           string
+	BinLink            string
+	ShelbyUSBPath      string
+	LaunchGettyPath    string
+	LoginProfilePath   string
+	RemoteServicesPath string
+	USBSerial          bool
+	Start              bool
+	Reboot             bool
 }
 
 func migrateOnDevice(opts migrateOptions) error {
@@ -79,6 +81,9 @@ func migrateOnDevice(opts migrateOptions) error {
 	}
 	if opts.LoginProfilePath == "" {
 		opts.LoginProfilePath = defaultLoginProfilePath
+	}
+	if opts.RemoteServicesPath == "" {
+		opts.RemoteServicesPath = defaultRemoteServicesPath
 	}
 
 	data, err := os.ReadFile(opts.Path)
@@ -186,6 +191,9 @@ func installOnDevice(opts migrateOptions) error {
 	if err := installLoginHint(opts.LoginProfilePath); err != nil {
 		return err
 	}
+	if err := installPersistentSSH(opts); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -259,6 +267,9 @@ func uninstallFromDevice(opts migrateOptions) error {
 	if opts.LoginProfilePath == "" {
 		opts.LoginProfilePath = defaultLoginProfilePath
 	}
+	if opts.RemoteServicesPath == "" {
+		opts.RemoteServicesPath = defaultRemoteServicesPath
+	}
 
 	if err := runCommand("mount", "-o", "remount,rw", "/"); err != nil {
 		log.Printf("root remount rw failed, continuing in case it is already writable: %v", err)
@@ -280,6 +291,9 @@ func uninstallFromDevice(opts migrateOptions) error {
 		return err
 	}
 	if err := removeLoginHint(opts.LoginProfilePath); err != nil {
+		return err
+	}
+	if err := removePersistentSSHIfOwned(opts); err != nil {
 		return err
 	}
 
@@ -322,6 +336,45 @@ func uninstallFromDevice(opts migrateOptions) error {
 	_ = runCommand("mount", "-o", "remount,ro", "/")
 	rootReadOnly = true
 	return nil
+}
+
+func installPersistentSSH(opts migrateOptions) error {
+	if opts.RemoteServicesPath == "" {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(opts.RemoteServicesPath), 0755); err != nil {
+		return err
+	}
+	existed := true
+	if _, err := os.Stat(opts.RemoteServicesPath); os.IsNotExist(err) {
+		existed = false
+	} else if err != nil {
+		return err
+	}
+	if existed {
+		return removeIfExists(persistentSSHOwnerPath(opts))
+	}
+	if err := os.WriteFile(opts.RemoteServicesPath, nil, 0644); err != nil {
+		return err
+	}
+	return os.WriteFile(persistentSSHOwnerPath(opts), nil, 0644)
+}
+
+func removePersistentSSHIfOwned(opts migrateOptions) error {
+	ownerPath := persistentSSHOwnerPath(opts)
+	if _, err := os.Stat(ownerPath); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	if err := removeIfExists(opts.RemoteServicesPath); err != nil {
+		return err
+	}
+	return removeIfExists(ownerPath)
+}
+
+func persistentSSHOwnerPath(opts migrateOptions) string {
+	return filepath.Join(opts.InstallDir, "remote_services.soundtouch-tiny")
 }
 
 func installLoginHint(path string) error {

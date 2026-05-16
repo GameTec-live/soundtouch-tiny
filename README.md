@@ -33,13 +33,13 @@ The binary is static and uses only Go's standard library.
 Enable SSH first, then SSH into the speaker as `root` and run:
 
 ```sh
-curl -fsSL https://github.com/gesellix/soundtouch-tiny/releases/download/main-build/soundtouch-tiny-linux-armv7 -o /tmp/soundtouch-tiny && chmod +x /tmp/soundtouch-tiny && /tmp/soundtouch-tiny migrate -usb-serial
+curl -fsSL https://github.com/GameTec-live/soundtouch-tiny/releases/download/main-build/soundtouch-tiny-linux-armv7 -o /tmp/soundtouch-tiny && chmod +x /tmp/soundtouch-tiny && /tmp/soundtouch-tiny migrate -usb-serial
 ```
 
 If you do not want the USB serial shell, omit `-usb-serial`:
 
 ```sh
-curl -fsSL https://github.com/gesellix/soundtouch-tiny/releases/download/main-build/soundtouch-tiny-linux-armv7 -o /tmp/soundtouch-tiny && chmod +x /tmp/soundtouch-tiny && /tmp/soundtouch-tiny migrate
+curl -fsSL https://github.com/GameTec-live/soundtouch-tiny/releases/download/main-build/soundtouch-tiny-linux-armv7 -o /tmp/soundtouch-tiny && chmod +x /tmp/soundtouch-tiny && /tmp/soundtouch-tiny migrate
 ```
 
 Power-cycle the speaker manually after migration. The migration command does not reboot unless you explicitly pass `-reboot`.
@@ -94,6 +94,56 @@ Notes from community reports:
 
 Sources: the Bose SoundTouch Toolkit migration guide documents the `remote_services` USB unlock and `ssh-rsa` SSH command, including the boot-flag compatibility note; Tim Van Wassenhove's SoundCork write-up documents the same `remote_services` FAT32 procedure and notes that `touch /mnt/nv/remote_services` can make the unlock persistent.
 
+## Factory reset and WiFi setup
+
+A factory reset wipes WiFi credentials, account pairing, presets, and local app state. It does not downgrade firmware. Use it when the speaker is wedged or when you want a clean setup.
+
+Common reset sequences:
+
+| Model | Factory reset sequence | Expected result |
+| --- | --- | --- |
+| SoundTouch 10 | Power on, then hold **Preset 1** + **Volume -** for about 10 seconds | WiFi indicator turns solid amber |
+| SoundTouch 20 | Power on, then hold **Preset 1** + **Volume -** for about 10 seconds | Lights sweep/blink, then setup mode |
+| SoundTouch 20/30 Series III | Hold **Preset 1** + **Preset 6** for about 10 seconds | White LED sweep, then setup mode |
+| SoundTouch 300 | Hold **Volume -** until the light bar blinks rapidly, roughly 15 seconds | Rapid blink, then reboot/setup |
+
+If your model has a recessed reset button, holding it for about 10 seconds is another common reset path. Button combinations vary by hardware generation, so confirm the speaker entered setup mode: the WiFi LED should glow solid amber and/or the display should show setup instructions.
+
+After reset, the speaker normally creates its own setup WiFi network named like:
+
+```text
+Bose SoundTouch XXXX
+```
+
+Connect your computer or phone to that network. The speaker is usually reachable at:
+
+```text
+http://192.0.2.1
+```
+
+The browser setup page can be used directly. If you prefer command line setup, push the new WiFi profile through the speaker API:
+
+```sh
+HOME_SSID="MyNetwork"
+HOME_PASS="MyPassword"
+
+curl -s -X POST http://192.0.2.1:8090/performWirelessSiteSurvey \
+  -H 'Content-Type: text/xml' \
+  --data-raw '<PerformWirelessSiteSurvey timeout="5"/>'
+
+curl -s -X POST http://192.0.2.1:8090/addWirelessProfile \
+  -H 'Content-Type: text/xml' \
+  --data-raw "<AddWirelessProfile><profile ssid=\"${HOME_SSID}\" password=\"${HOME_PASS}\" securityType=\"wpa_or_wpa2\" /></AddWirelessProfile>"
+```
+
+Expected response:
+
+```xml
+<?xml version="1.0" encoding="UTF-8" ?><AddWirelessProfileResponse />
+```
+
+The speaker will leave setup AP mode and join the new WiFi network after roughly 15 to 30 seconds. Reconnect your computer to the same home WiFi and find the speaker's new IP from your router, mDNS/Bonjour, or a network scan. Then enable SSH again if needed and run the one-line install/migrate command.
+
 ## Usage
 
 ### Run the server
@@ -125,6 +175,7 @@ This:
 - Backs up `/opt/Bose/etc/SoundTouchSdkPrivateCfg.xml` to `.original`.
 - Rewrites the Bose cloud URLs to `http://127.0.0.1:8000`.
 - Adds a small login hint in `/mnt/nv/.profile`.
+- Ensures SSH remains enabled across reboots by creating `/mnt/nv/remote_services` if it does not already exist.
 
 Optional USB serial root shell:
 
@@ -164,6 +215,70 @@ soundtouch-tiny wifi -ssid "OpenNetwork" -security open
 
 The command uses the speaker's local API at `http://127.0.0.1:8090` by default.
 
+### Optional JSON config
+
+On-device installs normally do not need a config file. If you run the server off-device or want static local radio preset definitions, start from:
+
+```text
+examples/soundtouch-tiny.json
+```
+
+Then run:
+
+```sh
+soundtouch-tiny serve -config examples/soundtouch-tiny.json
+```
+
+Schema:
+
+| Field | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `account_id` | string | `1234567` | Fake/compatibility Bose account ID returned by cloud-account endpoints. |
+| `server_url` | string | request host | External base URL used in generated links. For on-device use, leave empty. For off-device testing, set something like `http://192.168.1.50:8000`. |
+| `device_id` | string | learned or `LOCALDEVICE` | Device ID to report before the speaker has identified itself. Usually leave empty. |
+| `device_name` | string | `SoundTouch` | Friendly speaker name used in XML responses. |
+| `ip_address` | string | learned from requests | IP address to report in XML responses. Usually leave empty. |
+| `product_code` | string | `SoundTouch` | Product name/code returned to the speaker. |
+| `device_serial_number` | string | empty | Optional device serial reported in account/device XML. |
+| `product_serial_number` | string | empty | Optional product serial. Falls back to device serial/device ID where needed. |
+| `firmware_version` | string | `27.0.6` | Firmware version string returned by compatibility endpoints. |
+| `port` | number | `8000` | HTTP port for `serve`. `migrate` also rewrites Bose URLs to this port. |
+| `proxy_streams` | boolean | `false` | Proxy every stream URL through `/bmx/stream`. Useful when the speaker cannot reach streams directly. |
+| `proxy_https_streams` | boolean | `true` | Proxy only HTTPS streams. This is useful on old firmware with stale CA certificates. |
+| `insecure_https` | boolean | `true` | Disable upstream TLS certificate verification for proxied HTTPS streams. Needed on many SoundTouch firmwares because their CA bundle is stale. |
+| `presets` | array | `[]` | Optional static preset definitions. On-device presets usually live on the speaker, so this can be empty. |
+
+Preset object fields:
+
+| Field | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `slot` | number | required | Preset button number, `1` through `6`. Must be unique. |
+| `name` | string | `Preset N` | Display name. |
+| `source` | string | inferred | `LOCAL_INTERNET_RADIO` for direct stream URLs, `TUNEIN` for TuneIn station IDs, or another SoundTouch source if you know what you are doing. |
+| `type` | string | `stationurl` | Content item type expected by the speaker. |
+| `location` | string | source-dependent | TuneIn location such as `s16660`, `p12345`, or `/v1/playback/station/s16660`. For direct local radio, can be omitted if `stream_url` is set. |
+| `stream_url` | string | empty | Direct internet radio stream URL. HTTPS URLs are normally proxied on-device. |
+| `art` | string | empty | Optional image/art URL. |
+| `source_account` | string | empty | Optional source account/username value in generated XML. |
+
+Minimal direct-stream config:
+
+```json
+{
+  "port": 8000,
+  "proxy_https_streams": true,
+  "insecure_https": true,
+  "presets": [
+    {
+      "slot": 1,
+      "name": "Radio Paradise",
+      "source": "LOCAL_INTERNET_RADIO",
+      "stream_url": "http://stream.radioparadise.com/mp3-128"
+    }
+  ]
+}
+```
+
 ### Uninstall
 
 ```sh
@@ -171,6 +286,8 @@ soundtouch-tiny uninstall
 ```
 
 This restores the original Bose XML config and USB startup files if backups exist, removes init links, removes `/usr/bin/soundtouch-tiny`, removes `/opt/soundtouch-tiny`, removes `/mnt/nv/soundtouch-tiny`, and removes the login hint.
+
+If `migrate` created `/mnt/nv/remote_services`, `uninstall` removes it. If that file already existed before migration, `uninstall` leaves it alone.
 
 Power-cycle manually after uninstall to return the running USB gadget and boot-time behavior to stock.
 
