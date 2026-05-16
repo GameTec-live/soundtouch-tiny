@@ -1,0 +1,61 @@
+{
+  "account_id": "1234567",
+  "server_url": "http://192.168.1.50:8000",
+  "device_name": "SoundTouch Tiny",
+  "product_code": "SoundTouch",
+  "firmware_version": "27.0.6",
+  "port": 8000,
+  "proxy_streams": true,
+  "proxy_https_streams": true,
+  "insecure_https": false,
+  "presets": [
+    {
+      "slot": 1,
+      "name": "KEXP Seattle",
+      "source": "LOCAL_INTERNET_RADIO",
+      "type": "stationurl",
+      "stream_url": "https://kexp-mp3-128.streamguys1.com/kexp128.mp3",
+      "art": "https://www.kexp.org/static/assets/img/logo-kexp.png"
+    },
+    {
+      "slot": 2,
+      "name": "Radio Paradise Main Mix",
+      "source": "LOCAL_INTERNET_RADIO",
+      "type": "stationurl",
+      "stream_url": "http://stream.radioparadise.com/mp3-128",
+      "art": "https://radioparadise.com/favicon.ico"
+    },
+    {
+      "slot": 3,
+      "name": "SomaFM Groove Salad",
+      "source": "LOCAL_INTERNET_RADIO",
+      "type": "stationurl",
+      "stream_url": "http://ice1.somafm.com/groovesalad-128-mp3",
+      "art": "https://somafm.com/img/groovesalad120.png"
+    },
+    {
+      "slot": 4,
+      "name": "WFMU Freeform",
+      "source": "LOCAL_INTERNET_RADIO",
+      "type": "stationurl",
+      "stream_url": "https://stream0.wfmu.org/freeform-128k",
+      "art": "https://wfmu.org/favicon.ico"
+    },
+    {
+      "slot": 5,
+      "name": "NTS Radio 1",
+      "source": "LOCAL_INTERNET_RADIO",
+      "type": "stationurl",
+      "stream_url": "https://stream-relay-geo.ntslive.net/stream",
+      "art": "https://www.nts.live/favicon.ico"
+    },
+    {
+      "slot": 6,
+      "name": "BBC World Service",
+      "source": "LOCAL_INTERNET_RADIO",
+      "type": "stationurl",
+      "stream_url": "http://stream.live.vc.bbcmedia.co.uk/bbc_world_service",
+      "art": "https://www.bbc.co.uk/favicon.ico"
+    }
+  ]
+}

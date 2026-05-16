@@ -1,0 +1,44 @@
+name: Build and release main
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test
+        run: go test ./...
+
+      - name: Build
+        run: scripts/build.sh
+
+      - name: Publish moving main release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: main-build
+        run: |
+          set -euo pipefail
+          git tag -f "${TAG}" "${GITHUB_SHA}"
+          git push -f origin "refs/tags/${TAG}"
+
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            gh release upload "${TAG}" build/soundtouch-tiny-* build/SHA256SUMS --clobber
+          else
+            gh release create "${TAG}" build/soundtouch-tiny-* build/SHA256SUMS \
+              --title "Latest main build" \
+              --notes "Automatically built from main at ${GITHUB_SHA}." \
+              --prerelease
+          fi
