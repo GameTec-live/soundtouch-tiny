@@ -23,7 +23,7 @@ jobs:
         run: go test ./...
 
       - name: Build
-        run: scripts/build.sh
+        run: bash scripts/build.sh
 
       - name: Publish moving main release
         env:
